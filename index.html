@@ -8,6 +8,9 @@
 <meta name="apple-mobile-web-app-title" content="FinTrack">
 <meta name="theme-color" content="#0f1117">
 <title>FinTrack</title>
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
@@ -190,6 +193,9 @@ option{background:var(--bg2);}
     </div>
   </div>
   <div class="login-form">
+    <button class="btn btn-blue" id="faceid-login-btn" style="display:none;align-items:center;justify-content:center;gap:8px;margin-bottom:12px;" onclick="loginWithFaceId(selectedUser)">
+      <i class="ti ti-face-id"></i> Entrar com Face ID
+    </button>
     <div class="login-input-wrap">
       <input type="password" id="login-pass" placeholder="Senha" onkeydown="if(event.key==='Enter')doLogin()">
       <button class="eye-btn" onclick="toggleLoginEye()"><i class="ti ti-eye" id="login-eye-icon"></i></button>
@@ -197,6 +203,7 @@ option{background:var(--bg2);}
     <button class="login-btn" onclick="doLogin()">Entrar</button>
     <div class="login-error" id="login-error">Senha incorreta. Tente novamente.</div>
   </div>
+  <div style="margin-top:28px;font-size:11px;color:var(--muted);text-align:center;">Criado por Armando J.B.P. Júnior</div>
 </div>
 
 <!-- EDIT TRANSACTION MODAL -->
@@ -321,6 +328,7 @@ option{background:var(--bg2);}
           <button class="btn-type" id="piggy-btn-sub" onclick="setPiggyOp('sub')"><i class="ti ti-minus"></i> Retirar</button>
         </div>
       </div>
+      <div class="form-group"><label class="form-label" id="piggy-bank-label">Banco (de onde sai o dinheiro)</label><select id="piggy-bank"><option value="">Selecione...</option></select></div>
       <div class="form-group">
         <label class="form-label">Valor (R$)</label>
         <div class="decimal-row-input">
@@ -511,10 +519,20 @@ option{background:var(--bg2);}
     <div id="backup-status" style="font-size:12px;color:var(--green);margin-top:8px;display:none"></div>
   </div>
 
+  <div class="section-title">Segurança</div>
+  <div class="card" style="margin-top:0">
+    <div class="card-title">Face ID / Touch ID</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.5">Use a biometria do seu aparelho para entrar mais rápido, mesmo sem digitar a senha. A senha continua funcionando normalmente como alternativa.</div>
+    <div id="faceid-status" style="font-size:12px;margin-bottom:10px;">Verificando...</div>
+    <button class="btn btn-primary" id="faceid-setup-btn" style="display:none" onclick="registerFaceId(currentUser)"><i class="ti ti-face-id"></i> Ativar Face ID / Touch ID</button>
+    <button class="btn btn-danger" id="faceid-remove-btn" style="display:none" onclick="removeFaceId(currentUser)"><i class="ti ti-face-id-error"></i> Remover Face ID / Touch ID</button>
+  </div>
+
   <div class="section-title">Conta</div>
   <div class="card" style="margin-top:0;margin-bottom:0">
     <button class="btn btn-danger" onclick="switchUser()"><i class="ti ti-switch-horizontal"></i> Trocar de usuário</button>
   </div>
+  <div style="text-align:center;font-size:11px;color:var(--muted);padding:20px 16px 4px;">Criado por Armando J.B.P. Júnior</div>
 </div>
 
 </div><!-- /pages -->
@@ -547,6 +565,7 @@ function selectUser(id){
   document.getElementById('card-isabela').classList.toggle('selected',id==='isabela');
   document.getElementById('login-pass').value='';
   document.getElementById('login-error').style.display='none';
+  updateFaceIdUI();
 }
 function toggleLoginEye(){const i=document.getElementById('login-pass');const ic=document.getElementById('login-eye-icon');if(i.type==='password'){i.type='text';ic.className='ti ti-eye-off';}else{i.type='password';ic.className='ti ti-eye';}}
 
@@ -565,6 +584,115 @@ async function doLogin(){
     e.style.display='block';
     document.getElementById('login-pass').value='';
     setTimeout(()=>e.style.display='none',3000);
+  }
+}
+
+// ── FACE ID / TOUCH ID (WebAuthn) ────────────────────────────────
+// Trava de acesso local: usa a biometria do próprio aparelho como "segunda chave".
+// Não depende de servidor nem de conta — só serve para impedir que alguém sem
+// o seu rosto/digital abra o app caso pegue o celular.
+function faceIdKey(userId){ return 'fintrack_faceid_'+userId; }
+
+function bufToB64url(buf){
+  return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function b64urlToBuf(b64url){
+  const norm=b64url.replace(/-/g,'+').replace(/_/g,'/');
+  const pad=norm.length%4===0?'':'='.repeat(4-(norm.length%4));
+  const str=atob(norm+pad);
+  const arr=new Uint8Array(str.length);
+  for(let i=0;i<str.length;i++)arr[i]=str.charCodeAt(i);
+  return arr.buffer;
+}
+
+async function webAuthnSupported(){
+  if(!window.PublicKeyCredential)return false;
+  try{ return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(); }
+  catch(e){ return false; }
+}
+
+function hasFaceId(userId){ return !!localStorage.getItem(faceIdKey(userId)); }
+
+async function registerFaceId(userId){
+  const supported=await webAuthnSupported();
+  if(!supported){ alert('Este aparelho/navegador não tem Face ID, Touch ID ou biometria disponível para uso no navegador.'); return; }
+  try{
+    const u=USERS[userId];
+    const challenge=crypto.getRandomValues(new Uint8Array(32));
+    const userIdBytes=crypto.getRandomValues(new Uint8Array(16));
+    const cred=await navigator.credentials.create({
+      publicKey:{
+        challenge,
+        rp:{ name:'FinTrack' },
+        user:{ id:userIdBytes, name:u.name.toLowerCase(), displayName:u.name },
+        pubKeyCredParams:[{alg:-7,type:'public-key'},{alg:-257,type:'public-key'}],
+        authenticatorSelection:{ authenticatorAttachment:'platform', userVerification:'required', residentKey:'preferred' },
+        timeout:60000,
+        attestation:'none'
+      }
+    });
+    if(!cred)throw new Error('Cancelado');
+    localStorage.setItem(faceIdKey(userId), bufToB64url(cred.rawId));
+    updateFaceIdUI();
+    alert('Face ID / Touch ID ativado para '+u.name+'!');
+  }catch(err){
+    console.error(err);
+    alert('Não foi possível ativar: '+(err.message||'operação cancelada.'));
+  }
+}
+
+function removeFaceId(userId){
+  if(!confirm('Remover Face ID / Touch ID deste usuário? Você voltará a usar apenas a senha.'))return;
+  localStorage.removeItem(faceIdKey(userId));
+  updateFaceIdUI();
+}
+
+async function loginWithFaceId(userId){
+  try{
+    const credB64=localStorage.getItem(faceIdKey(userId));
+    if(!credB64){ alert('Face ID não configurado para este usuário.'); return; }
+    const challenge=crypto.getRandomValues(new Uint8Array(32));
+    const assertion=await navigator.credentials.get({
+      publicKey:{
+        challenge,
+        allowCredentials:[{ id:b64urlToBuf(credB64), type:'public-key' }],
+        userVerification:'required',
+        timeout:60000
+      }
+    });
+    if(!assertion)throw new Error('Cancelado');
+    currentUser=userId;
+    sessionStorage.setItem('ft_user',currentUser);
+    document.getElementById('login-screen').classList.add('hidden');
+    loadUserState(); updateUserUI(); fullRefresh();
+  }catch(err){
+    console.error(err);
+    const e=document.getElementById('login-error');
+    e.textContent='Não foi possível validar com Face ID / Touch ID. Use a senha.';
+    e.style.display='block';
+    setTimeout(()=>e.style.display='none',3500);
+  }
+}
+
+async function updateFaceIdUI(){
+  const supported=await webAuthnSupported();
+  // Botão na tela de login
+  const loginBtn=document.getElementById('faceid-login-btn');
+  if(loginBtn){
+    loginBtn.style.display=(supported && hasFaceId(selectedUser))?'flex':'none';
+  }
+  // Status na tela "Mais" (config de segurança), se estiver visível
+  const statusEl=document.getElementById('faceid-status');
+  const setupBtn=document.getElementById('faceid-setup-btn');
+  const removeBtn=document.getElementById('faceid-remove-btn');
+  if(statusEl && currentUser){
+    const enabled=hasFaceId(currentUser);
+    statusEl.textContent=!supported
+      ? 'Este aparelho/navegador não suporta Face ID/Touch ID via navegador.'
+      : (enabled ? '✓ Face ID / Touch ID ativado para '+USERS[currentUser].name : 'Face ID / Touch ID não configurado.');
+    statusEl.style.color=enabled?'var(--green)':'var(--muted)';
+    if(setupBtn)setupBtn.style.display=(supported && !enabled)?'block':'none';
+    if(removeBtn)removeBtn.style.display=(supported && enabled)?'block':'none';
   }
 }
 
@@ -616,7 +744,7 @@ function goTo(page){
   if(page==='charts')setTimeout(renderCharts,80);
   if(page==='dashboard')renderDashboard();
   if(page==='categories')renderCategories();
-  if(page==='more'){renderBanks();renderDebts();}
+  if(page==='more'){renderBanks();renderDebts();updateFaceIdUI();}
   if(page==='piggy'){renderPiggyPage();}
   if(page==='add'){renderPiggySummaryAdd();populatePiggySelect();}
   if(page==='add'){populateCatSelect();populateBankSelect('tx-bank');renderPiggySummaryAdd();populatePiggySelect();}
@@ -654,7 +782,7 @@ function confirmDecimal(iId,cId,dId){const v=parseFloat(document.getElementById(
 function acceptDecimal(cId){document.getElementById(cId).style.display='none';}
 
 function populateBankSelect(id){const sel=document.getElementById(id);if(!sel)return;const cur=sel.value;while(sel.options.length>1)sel.remove(1);state.banks.forEach(b=>sel.add(new Option(b.name,b.name)));if(cur)sel.value=cur;}
-function populateAllBankSelects(){['tx-bank','tx-bank-from','tx-bank-to','debt-bank','edit-bank'].forEach(id=>populateBankSelect(id));}
+function populateAllBankSelects(){['tx-bank','tx-bank-from','tx-bank-to','debt-bank','edit-bank','piggy-bank'].forEach(id=>populateBankSelect(id));}
 function populateCatSelect(){const sel=document.getElementById('tx-cat');if(!sel)return;const cur=sel.value;while(sel.options.length>1)sel.remove(1);state.categories.filter(c=>c.type===currentType).forEach(c=>sel.add(new Option(c.name,c.name)));if(cur)sel.value=cur;}
 
 function populateSelectForType(selEl, type){if(!selEl)return;const cur=selEl.value;while(selEl.options.length>1)selEl.remove(1);state.categories.filter(c=>c.type===type).forEach(c=>selEl.add(new Option(c.name,c.name)));if(cur)selEl.value=cur;}
@@ -774,6 +902,8 @@ function setPiggyOp(op){
   piggyOp=op;
   document.getElementById('piggy-btn-add').className='btn-type'+(op==='add'?' active-income':'');
   document.getElementById('piggy-btn-sub').className='btn-type'+(op==='sub'?' active-expense':'');
+  const lbl=document.getElementById('piggy-bank-label');
+  if(lbl)lbl.textContent=op==='add'?'Banco (de onde sai o dinheiro)':'Banco (para onde vai o dinheiro)';
 }
 function populatePiggySelect(){
   const sel=document.getElementById('piggy-select-add');if(!sel)return;
@@ -1170,6 +1300,13 @@ function exportReportHTML(){
   </body></html>`;
   const blob=new Blob([html],{type:'text/html;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');
   a.href=url;a.download=`fintrack_relatorio_${u.name.toLowerCase()}_${new Date().toISOString().slice(0,10)}.html`;a.click();URL.revokeObjectURL(url);
+}
+
+// ── PWA / OFFLINE ──────────────────────────────────────────────
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
+  });
 }
 
 // ── INIT ───────────────────────────────────────────────────────
