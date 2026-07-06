@@ -277,6 +277,13 @@ option{background:var(--bg2);}
       <div class="card-title" style="margin:0;">Transações</div>
       <span id="dash-tx-count" style="font-size:11px;color:var(--muted);"></span>
     </div>
+    <div style="margin-bottom:10px;">
+      <select id="tx-filter-cat" onchange="onTxFilterChange()"><option value="">Todas as categorias</option></select>
+    </div>
+    <div id="tx-filter-total-row" style="display:none;align-items:center;justify-content:space-between;background:var(--bg3);border:0.5px solid var(--border);border-radius:var(--radius-sm);padding:9px 12px;margin-bottom:12px;">
+      <span style="font-size:12px;color:var(--muted);">Total em <b id="tx-filter-cat-name" style="color:var(--text);"></b></span>
+      <span id="tx-filter-total-val" style="font-family:var(--mono);font-size:14px;font-weight:600;"></span>
+    </div>
     <div id="recent-tx"><div class="empty"><i class="ti ti-receipt-off"></i>Nenhuma transação</div></div>
   </div>
 </div>
@@ -566,6 +573,7 @@ function selectUser(id){
   document.getElementById('login-pass').value='';
   document.getElementById('login-error').style.display='none';
   updateFaceIdUI();
+  attemptAutoFaceId(id);
 }
 function toggleLoginEye(){const i=document.getElementById('login-pass');const ic=document.getElementById('login-eye-icon');if(i.type==='password'){i.type='text';ic.className='ti ti-eye-off';}else{i.type='password';ic.className='ti ti-eye';}}
 
@@ -577,6 +585,7 @@ async function doLogin(){
   if(hInput===hCorrect){
     currentUser=selectedUser;
     sessionStorage.setItem('ft_user',currentUser);
+    localStorage.setItem('fintrack_last_user',currentUser);
     document.getElementById('login-screen').classList.add('hidden');
     loadUserState(); updateUserUI(); fullRefresh();
   } else {
@@ -647,10 +656,10 @@ function removeFaceId(userId){
   updateFaceIdUI();
 }
 
-async function loginWithFaceId(userId){
+async function loginWithFaceId(userId, silent){
   try{
     const credB64=localStorage.getItem(faceIdKey(userId));
-    if(!credB64){ alert('Face ID não configurado para este usuário.'); return; }
+    if(!credB64){ if(!silent)alert('Face ID não configurado para este usuário.'); return; }
     const challenge=crypto.getRandomValues(new Uint8Array(32));
     const assertion=await navigator.credentials.get({
       publicKey:{
@@ -663,15 +672,31 @@ async function loginWithFaceId(userId){
     if(!assertion)throw new Error('Cancelado');
     currentUser=userId;
     sessionStorage.setItem('ft_user',currentUser);
+    localStorage.setItem('fintrack_last_user',currentUser);
     document.getElementById('login-screen').classList.add('hidden');
     loadUserState(); updateUserUI(); fullRefresh();
   }catch(err){
     console.error(err);
-    const e=document.getElementById('login-error');
-    e.textContent='Não foi possível validar com Face ID / Touch ID. Use a senha.';
-    e.style.display='block';
-    setTimeout(()=>e.style.display='none',3500);
+    // Em tentativas automáticas (silent), não mostra erro — o usuário
+    // ainda pode entrar normalmente com a senha, sem ser interrompido.
+    if(!silent){
+      const e=document.getElementById('login-error');
+      e.textContent='Não foi possível validar com Face ID / Touch ID. Use a senha.';
+      e.style.display='block';
+      setTimeout(()=>e.style.display='none',3500);
+    }
   }
+}
+
+// Chama o Face ID/Touch ID automaticamente, sem precisar clicar no botão,
+// sempre que o usuário selecionado já tiver biometria cadastrada.
+async function attemptAutoFaceId(userId){
+  try{
+    const supported=await webAuthnSupported();
+    if(supported && hasFaceId(userId)){
+      await loginWithFaceId(userId, true);
+    }
+  }catch(e){ /* silencioso: usuário continua podendo usar a senha */ }
 }
 
 async function updateFaceIdUI(){
@@ -704,6 +729,7 @@ function switchUser(){
   document.getElementById('login-error').style.display='none';
   Object.values(charts).forEach(c=>{try{c.destroy();}catch(e){}});
   charts={};
+  attemptAutoFaceId(selectedUser);
 }
 
 function updateUserUI(){
@@ -732,6 +758,7 @@ function fmt(n){return 'R$ '+parseFloat(n||0).toLocaleString('pt-BR',{minimumFra
 let currentType='income', currentCatType='income';
 let charts={};
 let viewDate=new Date();
+let txFilterCat='';
 
 const PAGE_MAP={dashboard:0,add:1,charts:2,categories:3,piggy:4,more:5};
 
@@ -1044,9 +1071,36 @@ function renderDashboard(){
   if(partialSub){partialSub.innerHTML=partial>=0?'<span style=color:var(--green)>✓ positivo</span>':'<span style=color:var(--red)>⚠ negativo</span>';}
   const bbDash=document.getElementById('bank-balances-dash');
   bbDash.innerHTML=state.banks.length?state.banks.map(b=>`<div class="bank-row"><div><div class="bank-name">${b.name}</div><div class="tag tag-bank" style="margin-top:3px">banco</div></div><div class="bank-bal" style="color:${parseFloat(b.balance||0)>=0?'var(--green)':'var(--red)'}">${fmt(b.balance||0)}</div></div>`).join(''):'<div class="empty"><i class="ti ti-building-bank"></i>Nenhum banco cadastrado</div>';
+
+  // Filtro por categoria
+  const catSelect=document.getElementById('tx-filter-cat');
+  if(catSelect){
+    const catSet=new Set();
+    monthTx.forEach(t=>{if(t.type!=='transfer')catSet.add(t.category||'Sem categoria');});
+    const catsList=Array.from(catSet).sort((a,b)=>a.localeCompare(b,'pt-BR'));
+    catSelect.innerHTML='<option value="">Todas as categorias</option>'+catsList.map(c=>`<option value="${c}">${c}</option>`).join('');
+    if(catsList.includes(txFilterCat)){catSelect.value=txFilterCat;}else{txFilterCat='';catSelect.value='';}
+  }
+  const filteredTx=txFilterCat?monthTx.filter(t=>t.type!=='transfer'&&(t.category||'Sem categoria')===txFilterCat):monthTx;
+  const totalRow=document.getElementById('tx-filter-total-row');
+  if(totalRow){
+    if(txFilterCat){
+      const catTotal=filteredTx.reduce((s,t)=>s+t.amount,0);
+      const catInfo=state.categories.find(c=>c.name===txFilterCat);
+      const isIncomeCat=catInfo?catInfo.type==='income':(filteredTx[0]&&filteredTx[0].type==='income');
+      document.getElementById('tx-filter-cat-name').textContent=txFilterCat;
+      const valEl=document.getElementById('tx-filter-total-val');
+      valEl.textContent=fmt(catTotal);
+      valEl.style.color=isIncomeCat?'var(--green)':'var(--red)';
+      totalRow.style.display='flex';
+    }else{
+      totalRow.style.display='none';
+    }
+  }
+
   const txCount=document.getElementById('dash-tx-count');
-  if(txCount)txCount.textContent=monthTx.length+' lançamento'+(monthTx.length!==1?'s':'');
-  document.getElementById('recent-tx').innerHTML=monthTx.length?monthTx.map(t=>{
+  if(txCount)txCount.textContent=filteredTx.length+' lançamento'+(filteredTx.length!==1?'s':'');
+  document.getElementById('recent-tx').innerHTML=filteredTx.length?filteredTx.map(t=>{
     const isTransfer=t.type==='transfer';
     const icon=isTransfer?'<i class="ti ti-arrows-exchange"></i>':(t.type==='income'?'<i class="ti ti-arrow-up"></i>':'<i class="ti ti-arrow-down"></i>');
     const iconClass=isTransfer?'transfer':t.type;
@@ -1066,8 +1120,13 @@ function renderDashboard(){
         <button class="act-btn" onclick="deleteTx(${t.id})">remover</button>
       </div>
     </div>
-  </div>`;}).join(''):`<div class="empty"><i class="ti ti-receipt-off"></i>Nenhuma transação em ${MONTHS[viewDate.getMonth()]} ${viewDate.getFullYear()}</div>`;
+  </div>`;}).join(''):`<div class="empty"><i class="ti ti-receipt-off"></i>Nenhuma transação${txFilterCat?' em "'+txFilterCat+'"':''} em ${MONTHS[viewDate.getMonth()]} ${viewDate.getFullYear()}</div>`;
   checkDebtAlerts();
+}
+
+function onTxFilterChange(){
+  txFilterCat=document.getElementById('tx-filter-cat').value;
+  renderDashboard();
 }
 
 function renderCategories(){
@@ -1316,7 +1375,8 @@ if(savedUser&&USERS[savedUser]){
   document.getElementById('login-screen').classList.add('hidden');
   loadUserState();updateUserUI();fullRefresh();
 }else{
-  selectUser('armando');
+  const lastUser=localStorage.getItem('fintrack_last_user');
+  selectUser(lastUser&&USERS[lastUser]?lastUser:'armando');
   setTimeout(()=>document.getElementById('login-pass').focus(),300);
 }
 setType('income');setCatType('income');
