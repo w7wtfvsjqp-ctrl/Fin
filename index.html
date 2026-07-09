@@ -780,6 +780,8 @@ function goTo(page){
 function fullRefresh(){
   populateAllBankSelects(); populateCatSelect();
   if(!state.piggies)state.piggies=[];
+  // Garantir compatibilidade: adicionar paidMonth em dívidas antigas
+  if(state.debts&&Array.isArray(state.debts)){state.debts.forEach(d=>{if(d.paidMonth===undefined)d.paidMonth=null;});}
   renderDashboard(); renderCategories(); renderBanks(); renderDebts(); checkDebtAlerts();
 }
 
@@ -1023,7 +1025,7 @@ function addDebt(){
   const bank=document.getElementById('debt-bank').value;
   const day=parseInt(document.getElementById('debt-day').value)||1;
   if(!name||isNaN(amt)||amt<=0){alert('Preencha nome e valor.');return;}
-  state.debts.push({id:Date.now(),name,amount:amt,bank,day});saveState();
+  state.debts.push({id:Date.now(),name,amount:amt,bank,day,paidMonth:null});saveState();
   document.getElementById('debt-name').value='';document.getElementById('debt-amt').value='';document.getElementById('debt-day').value='';
   document.getElementById('decimal-confirm-debt').style.display='none';
   renderDebts();checkDebtAlerts();
@@ -1031,18 +1033,29 @@ function addDebt(){
 function deleteDebt(id){state.debts=state.debts.filter(d=>d.id!==id);saveState();renderDebts();checkDebtAlerts();}
 
 // ── DEBT ALERTS ────────────────────────────────────────────────
+function markDebtAsPaid(debtId){
+  const debt=state.debts.find(d=>d.id===debtId);
+  if(!debt)return;
+  const now=new Date();
+  const currentMonth=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  debt.paidMonth=currentMonth;
+  saveState();
+  checkDebtAlerts();
+}
+
 function checkDebtAlerts(){
   const container=document.getElementById('debt-alerts-container');if(!container)return;
   const now=new Date();const alerts=[];
+  const currentMonth=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
   state.debts.forEach(d=>{
     const due=new Date(now.getFullYear(),now.getMonth(),d.day);
     const diff=Math.ceil((due-now)/(1000*60*60*24));
-    if(diff>=0&&diff<=2){
+    if(diff>=0&&diff<=2&&d.paidMonth!==currentMonth){
       const label=diff===0?'vence HOJE':diff===1?'vence amanhã':'vence em 2 dias';
-      alerts.push(`<b>${d.name}</b> (${fmt(d.amount)}) ${label}!`);
+      alerts.push({id:d.id,name:d.name,amount:d.amount,label});
     }
   });
-  container.innerHTML=alerts.map(a=>`<div class="alert-banner"><i class="ti ti-bell-ringing"></i><div class="alert-banner-text">${a}</div></div>`).join('');
+  container.innerHTML=alerts.map(a=>`<div class="alert-banner" style="justify-content:space-between;align-items:center"><div style="display:flex;align-items:center;gap:10px;flex:1"><i class="ti ti-bell-ringing" style="color:var(--amber);font-size:18px;flex-shrink:0"></i><div class="alert-banner-text"><b>${a.name}</b> (${fmt(a.amount)}) ${a.label}!</div></div><button onclick="markDebtAsPaid(${a.id})" style="background:none;border:none;color:var(--amber);cursor:pointer;font-weight:600;font-size:12px;padding:0 8px;white-space:nowrap;flex-shrink:0">Pago</button></div>`).join('');
 }
 
 
